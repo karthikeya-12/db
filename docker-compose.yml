@@ -1,0 +1,33 @@
+# This project now defaults to a SHARED, standalone pgvector/pgvector:pg16
+# container (named shared-postgres, port 5433) that lives outside any single
+# project folder -- see README.md "Setup" for the pgAdmin steps to create
+# this project's database and role inside it.
+#
+# The service below is kept only as a fallback for a fully self-contained
+# local Postgres if you ever don't want to use the shared container. It's
+# gated behind the "standalone" profile so a plain `docker compose up -d`
+# does nothing by default -- run it explicitly with:
+#
+#   docker compose --profile standalone up -d
+#
+# If you do use this fallback, point DATABASE_URL at whichever port you map
+# below instead of the shared container's 5433.
+
+services:
+  postgres:
+    profiles: ["standalone"]
+    image: pgvector/pgvector:pg16
+    container_name: ingestion-pipeline-postgres-standalone
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ingestion
+      POSTGRES_PASSWORD: ingestion
+      POSTGRES_DB: ingestion_pipeline
+    ports:
+      - "5434:5432"
+    volumes:
+      - ingestion_pg_data:/var/lib/postgresql/data
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+
+volumes:
+  ingestion_pg_data:
