@@ -142,6 +142,23 @@ class TabularRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class PipelineRun(Base):
+    """One row per orchestrator.run() call -- makes run history queryable per source_id."""
+
+    __tablename__ = "pipeline_runs"
+
+    run_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: uuid.uuid4().hex)
+    source_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    items_identified: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    items_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    items_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    items_skipped_duplicate: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    items_dead_lettered: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    duration_seconds: Mapped[float] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class DeadLetterItem(Base):
     __tablename__ = "dead_letter_items"
 

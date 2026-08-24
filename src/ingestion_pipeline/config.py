@@ -45,6 +45,16 @@ class Settings(BaseSettings):
     chunk_max_words: int = 500
     chunk_overlap_words: int = 50
 
+    # Neo4j -- used only by the entity/relationship consumer (consumers/entity_relationship_consumer.py),
+    # never by the core ingestion pipeline itself. Fill in your own instance's details.
+    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = ""
+
+    # Entity/relationship extraction (separate from the embedding model above --
+    # this is a chat-completion call, not an embedding call)
+    entity_extraction_model: str = "gpt-4o-mini"
+
     # Logging
     log_level: str = "INFO"
 

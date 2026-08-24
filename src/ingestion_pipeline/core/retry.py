@@ -41,6 +41,36 @@ def with_retry(max_attempts: int, base_seconds: float):
     return decorator
 
 
+# Exceptions from these classes are treated as transient (worth retrying) when
+# they surface from an external call wrapped by call_with_retry -- anything
+# else propagates immediately as non-retryable, matching the task's
+# "retryable errors like timeouts/5xx/rate-limits vs non-retryable like
+# malformed input" split.
+TRANSIENT_EXCEPTIONS = (TimeoutError, ConnectionError, OSError)
+
+
+def call_with_retry(func, *args, max_attempts: int, base_seconds: float, **kwargs):
+    """
+    Call func(*args, **kwargs), retrying with exponential backoff + jitter only
+    if it raises RetryableError or one of TRANSIENT_EXCEPTIONS (auto-translated
+    to RetryableError). Any other exception propagates on the first attempt --
+    no retry budget spent on errors a retry can't fix.
+    """
+
+    @with_retry(max_attempts, base_seconds)
+    def _attempt():
+        try:
+            return func(*args, **kwargs)
+        except NonRetryableError:
+            raise
+        except RetryableError:
+            raise
+        except TRANSIENT_EXCEPTIONS as exc:
+            raise RetryableError(str(exc)) from exc
+
+    return _attempt()
+
+
 def write_dead_letter(
     session: Session, item_id: str, source_id: str, stage_failed: str, error_message: str, attempt_count: int
 ) -> None:

@@ -16,6 +16,8 @@ permanently-broken item can never stall the whole source.
 from __future__ import annotations
 
 import logging
+import re
+from datetime import datetime, timezone
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -25,8 +27,8 @@ from ingestion_pipeline.core.blobstore import BlobStore
 from ingestion_pipeline.core.chunker import get_chunker
 from ingestion_pipeline.core.embedder import Embedder
 from ingestion_pipeline.core.metrics import RunMetrics
-from ingestion_pipeline.core.normalizer import NotYetImplementedDocumentNormalizer, TabularParser
-from ingestion_pipeline.core.retry import write_dead_letter
+from ingestion_pipeline.core.normalizer import TabularParser, get_document_normalizer
+from ingestion_pipeline.core.retry import call_with_retry, write_dead_letter
 from ingestion_pipeline.core.types import ContentType
 from ingestion_pipeline.db.models import ChunkEmbedding, IngestionItem, TabularRow
 from ingestion_pipeline.db.session import session_scope
@@ -42,11 +44,16 @@ class PipelineOrchestrator:
     """The only component that knows the pipeline's fixed stage order. See module docstring above."""
 
     def __init__(self, adapter: Adapter, blob_store: BlobStore, embedder: Embedder) -> None:
+        from ingestion_pipeline.config import get_settings
+
         self.adapter = adapter
         self.blob_store = blob_store
         self.embedder = embedder
         self.tabular_parser = TabularParser()
-        self.document_normalizer = NotYetImplementedDocumentNormalizer()
+        self.document_normalizer = get_document_normalizer()
+        settings = get_settings()
+        self._retry_max_attempts = settings.retry_max_attempts
+        self._retry_base_seconds = settings.retry_base_seconds
 
     def run(self) -> dict:
         source_id = self.adapter.source_id
@@ -62,13 +69,18 @@ class PipelineOrchestrator:
         for ref in refs:
             self._process_one(ref, metrics)
 
-        return metrics.finish_and_log()
+        summary = metrics.finish_and_log()
+        with session_scope() as session:
+            metrics.persist(session)
+        return summary
 
     def _process_one(self, ref, metrics: RunMetrics) -> None:
         source_id = self.adapter.source_id
 
         try:
-            raw_item = self.adapter.fetch(ref)
+            raw_item = call_with_retry(
+                self.adapter.fetch, ref, max_attempts=self._retry_max_attempts, base_seconds=self._retry_base_seconds
+            )
         except Exception as exc:
             logger.error("fetch failed source_id=%s err=%s", source_id, exc)
             metrics.items_failed += 1
@@ -99,7 +111,13 @@ class PipelineOrchestrator:
                     session,
                     events.TOPIC_ITEM_INGESTED,
                     item_id,
-                    {"source_id": source_id, "item_id": item_id, "content_type": raw_item.content_type.value},
+                    {
+                        "source_id": source_id,
+                        "item_id": item_id,
+                        "content_type": raw_item.content_type.value,
+                        "storage_ref": getattr(raw_item, "_storage_ref", None),
+                        "ingested_at": datetime.now(timezone.utc).isoformat(),
+                    },
                 )
                 self._upsert_status(session, raw_item, "DONE")
                 if sha256_hash:
@@ -136,8 +154,16 @@ class PipelineOrchestrator:
             self._upsert_status(session, raw_item, "DUPLICATE")
             raise _DuplicateItem()
 
-        archive_path = f"{raw_item.source_id}/{raw_item.item_id}/{raw_item.file_name or 'raw.bin'}"
+        # item_id/file_name land in a filesystem path below -- sanitize anything that's a
+        # reserved character on Windows (":" in particular: LocalFolderAdapter's
+        # item_id is "local:filename.ext", and ":" is only valid there as a drive-letter
+        # separator, which broke archiving with WinError 267 on real runs). Postgres/event
+        # payloads keep the original item_id unsanitized -- only the path is affected.
+        safe_item_id = re.sub(r'[<>:"/\\|?*]', "_", raw_item.item_id)
+        safe_file_name = re.sub(r'[<>:"/\\|?*]', "_", raw_item.file_name or "raw.bin")
+        archive_path = f"{raw_item.source_id}/{safe_item_id}/{safe_file_name}"
         storage_ref = self.blob_store.put(archive_path, raw_bytes)
+        raw_item._storage_ref = storage_ref  # stashed for the event payload published after persist succeeds
         session.execute(
             pg_insert(IngestionItem)
             .values(
@@ -175,7 +201,13 @@ class PipelineOrchestrator:
         if not chunks:
             return
 
-        vectors = self.embedder.embed_missing(session, chunks)
+        vectors = call_with_retry(
+            self.embedder.embed_missing,
+            session,
+            chunks,
+            max_attempts=self._retry_max_attempts,
+            base_seconds=self._retry_base_seconds,
+        )
         for chunk in chunks:
             session.execute(
                 pg_insert(ChunkEmbedding)

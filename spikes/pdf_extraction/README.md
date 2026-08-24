@@ -38,8 +38,17 @@ built -- see `compare_extractors.py` for where to add it as a third
 
 ## Deliverable
 
-This spike's actual deliverable is the filled-in `comparison_report.md` plus
-a one-paragraph recommendation once it's been run against real sample
-documents -- the script alone is just the harness, not the finished spike.
-No sample documents were available to run this against yet, so
-`comparison_report.md` does not exist in this repo until you generate it.
+`comparison_report.md` in this folder is the filled-in deliverable --
+results, scoring rubric, and recommendation from an actual run.
+
+## About the sample set
+
+No real-world documents were available in this session, so the 6 samples in
+`samples/` were generated synthetically (`generate_samples.py`) to exercise
+the same structural challenges: headings/paragraphs (`text_native.pdf`),
+a two-column layout (`multi_column.pdf`), a data table (`table_heavy.pdf`),
+a page with no text layer at all (`scanned_image.pdf`, forces OCR), and two
+DOCX files (`plain.docx`, `table.docx`). See `comparison_report.md`'s
+"Caveat: synthetic samples" section for what this does and doesn't validate
+-- re-running this spike against a handful of real documents is worth doing
+before fully committing to a conversion approach.

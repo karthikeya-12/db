@@ -98,6 +98,23 @@ CREATE TABLE IF NOT EXISTS tabular_rows (
 
 CREATE INDEX IF NOT EXISTS idx_tabular_rows_item ON tabular_rows (item_id);
 
+-- One row per orchestrator.run() call -- makes run history queryable per
+-- source_id instead of only visible as a single end-of-run log line.
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+    run_id                   TEXT PRIMARY KEY,
+    source_id                TEXT NOT NULL,
+    items_identified         INT NOT NULL DEFAULT 0,
+    items_processed          INT NOT NULL DEFAULT 0,
+    items_failed             INT NOT NULL DEFAULT 0,
+    items_skipped_duplicate  INT NOT NULL DEFAULT 0,
+    items_dead_lettered      INT NOT NULL DEFAULT 0,
+    started_at               TIMESTAMPTZ NOT NULL,
+    duration_seconds         NUMERIC NOT NULL,
+    created_at                TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pipeline_runs_source_started ON pipeline_runs (source_id, started_at);
+
 CREATE TABLE IF NOT EXISTS dead_letter_items (
     id             TEXT PRIMARY KEY,
     item_id        TEXT NOT NULL REFERENCES ingestion_items(item_id),

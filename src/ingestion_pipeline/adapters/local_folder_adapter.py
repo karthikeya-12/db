@@ -20,6 +20,8 @@ _EXT_TO_CONTENT_TYPE = {
     ".xlsx": ContentType.TABULAR,
     ".txt": ContentType.DOCUMENT,
     ".md": ContentType.DOCUMENT,
+    ".pdf": ContentType.DOCUMENT,
+    ".docx": ContentType.DOCUMENT,
 }
 
 
@@ -32,7 +34,11 @@ class LocalFolderAdapter(Adapter):
 
     def list_changes(self, cursor: str | None) -> list[Path]:
         since = float(cursor) if cursor else 0.0
-        return sorted(p for p in self._folder.iterdir() if p.is_file() and p.stat().st_mtime > since)
+        return sorted(
+            p
+            for p in self._folder.iterdir()
+            if p.is_file() and p.stat().st_mtime > since and p.suffix.lower() in _EXT_TO_CONTENT_TYPE
+        )
 
     def fetch(self, ref: Path) -> RawItem:
         suffix = ref.suffix.lower()
