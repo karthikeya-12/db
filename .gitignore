@@ -1,0 +1,150 @@
+
+# ==============================
+# Python Cache
+# ==============================
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# ==============================
+# Virtual Environments
+# ==============================
+venv/
+env/
+.venv/
+ENV/
+virtualenv/
+.python-version
+
+# ==============================
+# Environment Variables & Secrets
+# ==============================
+.env
+.env.*
+!.env.example
+!.env.template
+*.pem
+*.key
+secrets/
+credentials.json
+service-account*.json
+
+# ==============================
+# Logs & Runtime Files
+# ==============================
+*.log
+logs/
+log/
+*.pid
+*.seed
+
+# ==============================
+# Build & Distribution
+# ==============================
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+MANIFEST
+
+# ==============================
+# Testing & Coverage
+# ==============================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+test-results/
+junit.xml
+.hypothesis/
+
+# ==============================
+# Type Checking & Linting
+# ==============================
+.mypy_cache/
+.dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# ==============================
+# IDE & Editors
+# ==============================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.spyderproject
+.spyproject
+
+# ==============================
+# Jupyter Notebook
+# ==============================
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# ==============================
+# OS Generated Files
+# ==============================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ==============================
+# Database Files
+# ==============================
+*.sqlite
+*.sqlite3
+*.db
+
+# ==============================
+# ML / AI Artifacts
+# ==============================
+mlruns/
+mlartifacts/
+wandb/
+artifacts/
+checkpoints/
+models/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.h5
+*.safetensors
+
+# ==============================
+# Hugging Face Cache
+# ==============================
+.cache/huggingface/
+.cache/torch/
+.cache/
+
+# ==============================
+# Temporary Files
+# ==============================
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig
+
+# ==============================
+# Documentation Build
+# ==============================
+site/
+docs/_build/
+
+# ==============================
+# Celery
+# ==============================
+celerybeat-schedule
+celerybeat.pid
