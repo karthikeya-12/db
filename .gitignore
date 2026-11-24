@@ -113,7 +113,6 @@ mlartifacts/
 wandb/
 artifacts/
 checkpoints/
-models/
 *.pt
 *.pth
 *.ckpt
