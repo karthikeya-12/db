@@ -55,6 +55,15 @@ class Settings(BaseSettings):
     # this is a chat-completion call, not an embedding call)
     entity_extraction_model: str = "gpt-4o-mini"
 
+    # Local-folder watcher (watcher.py) -- the folder cli.py and watcher.py both
+    # point LocalFolderAdapter at; kept here so both entrypoints agree without
+    # hardcoding the path twice.
+    watch_folder_path: str = "./data/incoming"
+
+    # REST API (api/main.py) -- comma-separated list of origins allowed to call
+    # it; the ingestion_pipeline_ui frontend runs on the Vite dev server by default.
+    api_cors_origins: str = "http://localhost:5173"
+
     # Logging
     log_level: str = "INFO"
 
