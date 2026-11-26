@@ -7,26 +7,30 @@ requires-python = ">=3.12.10"
 dependencies = [
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.1",
-    "pgvector>=0.2.5",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "python-dotenv>=1.0",
     "tenacity>=8.2",
     "openpyxl>=3.1",
     "openai>=1.30",
-    "neo4j>=6.2.0",
+    "neo4j>=5.28,<6",  # cognee[neo4j] requires neo4j<6
+    "cognee[neo4j]>=1.6.10,<2",
+    "argon2-cffi>=23.1",
+    "httpx>=0.27",
+    "pyjwt>=2.8",
+    "s3fs>=2024.1",  # cognee imports it while storing documents, even for local files
     "fastapi[standard]>=0.141.1",
     "watchdog>=6.0.0",
-    "torch>=2.13.0",
-    "pandas>=3.0.5",
-    "langchain-openai>=1.6.0",
+    "docling>=2.0",
+    "ftfy>=6.2",
+    "langgraph>=0.6",
+    "langchain-openai>=0.3",
+    "langchain-core>=0.3",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "pgserver>=0.1.4"]
 spike = ["pymupdf4llm>=0.0.10", "pypdf>=4.2"]
-docling = ["docling>=2.0", "ftfy>=6.2"]
-graph = ["neo4j>=5.20"]
 api = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "watchdog>=4.0"]
 
 [tool.pytest.ini_options]

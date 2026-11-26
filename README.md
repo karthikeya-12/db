@@ -1,151 +1,121 @@
-# Ingestion Pipeline
+# Archive: document ingestion and chat
 
-Single-source (phase 1: user file uploads) ingestion pipeline: fetch -> archive
--> dedup -> normalize -> chunk -> embed -> persist -> publish, built so a
-second source can be added later by writing a new Adapter only — no changes
-to the orchestrator or any other shared component.
+Bring documents in (uploads or connected apps), have them chunked, embedded and linked into a knowledge graph
+automatically, then ask questions and get answers that cite their sources.
 
-## Stack
-
-- Python 3.12, SQLAlchemy 2.0 with the **psycopg (v3)** driver — no psycopg2 anywhere in this codebase
-- PostgreSQL + pgvector for state, dedup, checkpoints, chunk embeddings, structured rows
-- Local filesystem BlobStore for dev (an S3-backed BlobStore is a drop-in swap behind the same interface, built alongside the real S3 adapter)
-
-## What's built in this slice (today)
-
-1. Source Adapter contract + orchestrator — `core/adapter.py`, `core/orchestrator.py`
-2. Postgres schema — `sql/schema.sql`, mirrored in `db/models.py`
-3. Local dev environment — `docker-compose.yml`
-4. BlobStore abstraction — `core/blobstore.py`
-5. Chunking strategy framework (word-window / sentence-boundary / thread-level) — `core/chunker.py`
-6. Embedder with cache-before-embed — `core/embedder.py`
-7. Event publishing (outbox pattern) — `core/events.py`
-8. Secrets access module — `config.py::SecretsProvider`
-9. Retry policy + dead-letter queue — `core/retry.py`
-10. Structured logging + per-run metrics — `core/logging_config.py`, `core/metrics.py`
-11. PDF/DOCX extraction tooling spike — `spikes/pdf_extraction/`
-
-12. Docling-based Markdown conversion for DOCUMENT content — `core/normalizer.py::DoclingDocumentNormalizer`, plus a `clean_markdown()` cleaning pass (mojibake repair + page-furniture stripping). Requires the optional `docling` extra (`pip install -e ".[docling]"`); falls back to a clear-error stub if not installed. NOTE: Docling's exact current API/packaging was not verified against live docs in this session (web search was unavailable throughout) — built against training-era knowledge of its interface; flagged in the code as the one place to fix if the API has moved.
-13. Retry policy wired in — `core/retry.py::call_with_retry` now wraps the two external calls (`adapter.fetch`, `embedder.embed_missing`) in `core/orchestrator.py`, auto-translating transient errors (timeouts/connection/OS errors) to `RetryableError`; anything else fails immediately as non-retryable.
-14. Event payload completed — `item.ingested` events now include `storage_ref` and `ingested_at`, matching the task spec's minimum payload.
-15. Metrics persistence — `pipeline_runs` table (`sql/schema.sql`, `db/models.py::PipelineRun`) stores one row per `orchestrator.run()` call, so run history is queryable per source_id instead of only visible in the end-of-run log line.
-16. PDF/DOCX extraction spike run — `spikes/pdf_extraction/comparison_report.md` has real results (from a synthetic sample set — see the report's caveat section) and a recommendation.
-17. Entity/relationship extraction + Neo4j — `consumers/entity_relationship_consumer.py` polls the `item.ingested` event outbox (independent of the core orchestrator), extracts entities/relationships via an LLM (`core/entity_extractor.py`), and writes them to Neo4j (`core/graph_store.py`). Requires the optional `graph` extra (`pip install -e ".[graph]"`) and your own Neo4j instance's connection details in `.env`. Run with `python -m ingestion_pipeline.consumers.entity_relationship_consumer`.
-    - Deliberately simplified vs. everest_repo's kg_zone2/kg_zone3 approach in one specific way: entities are deduped by (name, type) only — there's no mapping step against an external concept/entity registry, since this pipeline has no equivalent of Everest's proprietary vocabulary. See `core/entity_extractor.py`'s docstring for that scope decision.
-    - Everything else is reused directly rather than re-derived: `core/entity_extractor.py::validate_extraction()` ports everest_repo's `signal_extraction.py::validate_extraction` typed-findings approach (rule_id/severity/detail) including its verbatim-evidence check — every evidence span an LLM returns is checked against the actual source text, and anything that fails (missing fields, bad type, non-verbatim evidence) is dropped before it ever reaches Neo4j. `core/graph_store.py` ports everest_repo's `kg_zone3/worker/neo4j/chunk_loader.py::load_via_driver` write pattern: a uniqueness constraint declared once, batched `UNWIND`+`MERGE` writes (one round-trip per item instead of one per entity/relationship), and returned driver write-counters (`nodes_created`/`relationships_created`/`properties_set`) instead of counting client-side.
-
-**Deliberately not built yet (next up):**
-- The real S3 adapter — `adapters/local_folder_adapter.py` is a local-filesystem stand-in used only to prove the orchestrator runs end-to-end without needing AWS credentials yet.
-- Automatic OAuth token-refresh integration into `SecretsProvider.get_secret()` — the manual seam (`register_refresher`/`refresh()`) exists, but wiring it to trigger automatically on token expiry was deferred since no OAuth-based adapter exists yet to actually exercise it against (see `config.py`'s `SecretsProvider` docstring).
-
-## Setup
-
-Postgres + pgvector for this project comes from a **shared container** (`shared-postgres`), not from this project's own `docker-compose.yml`. The idea: one long-lived pgvector-enabled Postgres server, reused across every local project, not just this one. This project only owns its own database/role inside that shared server.
-
-### 1. Start the shared Postgres container (one-time, outside this project)
-
-```bash
-docker pull pgvector/pgvector:pg16
-docker volume create shared_pgvector_data
-docker run -d --name shared-postgres --restart unless-stopped   -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres   -p 5433:5432   -v shared_pgvector_data:/var/lib/postgresql/data   pgvector/pgvector:pg16
+```
+ Upload / Connectors (Nango OAuth + polling)
+        │
+        ▼
+ Adapter ─▶ Orchestrator ─▶ dedup by content hash ─▶ archive ─▶ normalize (Docling / text) ─▶ Postgres + outbox event
+                                                                                                   │
+                                                                                                   ▼
+                                                              Cognee consumer: chunk · embed (LanceDB) · entities → Neo4j
+                                                                                                   │
+                                                                                                   ▼
+                              Chat: LangGraph (condense question → Cognee retrieval → OpenAI answer with [n] citations)
+ Next.js UI  ◀──────────────────────────  FastAPI (cookie login, /api/*)  ◀─────────────────────────┘
 ```
 
-If `shared-postgres` already exists from another project, skip straight to step 2 — reuse it.
+## What it does
 
-### 2. Create this project's role, database, extension, and schema (via pgAdmin)
+- **Library**: drag-and-drop upload of any format (PDF, Office, text, tables, ...), document list with status.
+- **Connectors**: Gmail, Google Calendar, Google Drive, Slack, Notion, Outlook, OneDrive, Dropbox, GitHub, Jira, Confluence.
+  OAuth goes through a self-hosted Nango; new data is found by polling every `CONNECTOR_POLL_MINUTES` and ingested automatically.
+  See `docs/CONNECTORS.md` and `docs/NANGO_SETUP.md`.
+- **Consult**: streaming chat over everything ingested; answers cite numbered sources, conversations are saved per user.
+- **Ledger**: pipeline runs and failed items, with one-click retry.
+- **Login**: accounts are created by an operator (no public sign-up).
 
-Connect pgAdmin to the shared container first:
+Changed or re-uploaded documents are re-ingested as a new version; identical content is skipped.
 
-| Field | Value |
+## Requirements
+
+- Python 3.12 and [uv](https://docs.astral.sh/uv/); Node 22+
+- PostgreSQL 16 with pgvector
+- **Neo4j Enterprise (or Aura) with the APOC plugin.** Cognee needs APOC. Use a dedicated database (`NEO4J_DATABASE=ingest`);
+  creating one needs Enterprise: `CREATE DATABASE ingest`.
+- An OpenAI API key (embeddings, entity extraction and answers)
+- Docker, if you want Nango or the full-stack compose file
+
+## Quick start (local development)
+
+```bash
+cp .env.sample .env          # fill in the values below
+uv lock && uv sync           # after pulling dependency changes
+uv run python scripts/cognee_smoke.py --create-db     # checks Postgres, Neo4j + APOC, OpenAI and a real ingest
+uv run uvicorn ingestion_pipeline.api.main:app --port 8000
+
+cd frontend && npm install && cp .env.local.example .env.local && npm run dev   # http://localhost:3000
+```
+
+Minimum `.env`:
+
+| Setting | Purpose |
 |---|---|
-| Host | localhost |
-| Port | 5433 |
-| Maintenance database | postgres |
-| Username | postgres |
-| Password | postgres |
+| `DATABASE_URL` | Postgres (the schema in `sql/schema.sql` is applied automatically at startup) |
+| `EMBEDDING_API_KEY` | OpenAI key, used for embeddings, entity extraction and chat |
+| `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, `NEO4J_DATABASE` | Knowledge graph |
+| `AUTH_SECRET` | Signs login cookies. `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
+| `ADMIN_EMAIL`, `ADMIN_PASSWORD` | First user, created at startup when there are no users. Remove after first login |
+| `NANGO_SECRET_KEY`, `NANGO_BASE_URL` | Connectors (see below) |
 
-Then, against that server:
+More users: `uv run python -m ingestion_pipeline.cli create-user someone@example.com`.
+Every setting is documented in `.env.sample`.
 
-1. Login/Group Role -> create `ingestion` with password `ingestion`, "Can login?" = Yes.
-2. Database -> create `ingestion_pipeline`, owner = `ingestion`.
-3. Open a Query Tool on the new `ingestion_pipeline` database and run:
-   ```sql
-   CREATE EXTENSION IF NOT EXISTS vector;
-   ```
-4. Run `sql/schema.sql` (this repo) against `ingestion_pipeline` — Query Tool -> open file -> Execute. It's idempotent, safe to re-run.
-
-### 3. Point this project at it and install deps
+## Connectors (self-hosted Nango)
 
 ```bash
-cp .env.sample .env        # fill in EMBEDDING_API_KEY if you have one
-                            # DATABASE_URL default already targets postgresql+psycopg://ingestion:ingestion@localhost:5433/ingestion_pipeline
-pip install -e ".[dev]"
+uv run python scripts/setup_nango_env.py
+docker compose -f deploy/nango/docker-compose.yml --env-file deploy/nango/.env up -d
+uv run python scripts/nango_check.py
 ```
 
-### Fallback: fully self-contained local Postgres (no shared container)
+Then follow `docs/NANGO_SETUP.md` (dashboard, secret key) and `docs/CONNECTORS.md` (registering an OAuth app per provider).
+The free self-hosted Nango provides OAuth and token refresh only, with no sync engine or webhooks, which is why the app polls.
+Back up `NANGO_ENCRYPTION_KEY`: without it stored connections cannot be decrypted.
 
-If you'd rather not use the shared container, this project's `docker-compose.yml` still has its own Postgres service, opt-in via a profile so it never starts by accident:
+## Full stack in Docker
 
 ```bash
-docker compose --profile standalone up -d   # starts Postgres + pgvector on host port 5434
-docker compose --profile standalone down     # stop, keep data
-docker compose --profile standalone down -v   # stop AND wipe the data volume
+docker compose --profile stack up -d --build      # Postgres, Neo4j (APOC + `ingest` db), API, web UI on :3000
 ```
 
-Point `DATABASE_URL` at port **5434** instead of 5433 if you use this path — schema.sql is auto-applied on that container's first boot only.
+Needs `NEO4J_PASSWORD` and `NEO4J_ACCEPT_LICENSE=yes` in `.env` (Neo4j Enterprise licence). Nango stays a separate compose file.
+This stack has not been run end to end by the authors; treat the first start as a smoke test.
 
-## Run the demo pipeline locally (no AWS needed)
+## Tests and quality checks
 
 ```bash
-mkdir -p data/incoming
-cp some_file.csv data/incoming/      # .csv, .xlsx, .txt, .md all work with the demo adapter
-python -m ingestion_pipeline.cli
+uv run pytest                          # backend (embedded Postgres, mocked provider APIs, scripted chat agent)
+cd frontend && npx tsc --noEmit && npm run build
+uv run python scripts/run_eval.py      # answer quality against your real stack (a few cents of OpenAI usage)
 ```
 
-Re-running is safe — already-processed files are skipped by the dedup check,
-not reprocessed.
+`scripts/run_eval.py` ingests three small documents from `evals/corpus`, asks the questions in `evals/cases.json`, and checks
+for the right facts, the right citation, and an honest "not found" for questions the archive cannot answer.
 
-## Run tests
-
-```bash
-pytest
-```
-
-Tests cover pure logic only (chunker, dedup hashing) — no database required.
-
-## Project layout
+## Layout
 
 ```
 src/ingestion_pipeline/
-  config.py                  # Settings + SecretsProvider (every credential lookup goes through this)
-  db/
-    session.py                 # SQLAlchemy engine/session -- psycopg v3, not psycopg2
-    models.py                  # ORM models -- source of truth for schema shape
-  core/
-    types.py                    # RawItem, Chunk, ContentType
-    adapter.py                   # The contract every source adapter implements
-    orchestrator.py               # The ONLY place that knows the pipeline's stage order
-    blobstore.py                   # Raw-bytes archive abstraction
-    dedup.py                        # SHA-256 fingerprint + dedup_registry check
-    checkpoint.py                    # connector_checkpoints get/set
-    chunker.py                        # Word-window / sentence-boundary / thread-level strategies
-    embedder.py                        # Cache-before-embed
-    events.py                           # Outbox publish / poll / acknowledge
-    retry.py                             # Retry policy + dead-letter queue
-    normalizer.py                         # DOCUMENT->Markdown (not yet implemented) + TABULAR row parser
-    logging_config.py                     # Structured JSON logging
-    metrics.py                             # Per-run metrics
-  adapters/
-    local_folder_adapter.py                # Demo adapter -- proves the orchestrator without AWS
-  cli.py                                    # Local run entrypoint
-sql/schema.sql                               # Idempotent DDL, applied by docker-compose on first boot
-spikes/pdf_extraction/                       # Task 11 -- extraction tooling comparison harness
-tests/                                       # Unit tests for pure-logic pieces
+  api/            FastAPI app: main (items, uploads, runs), auth, connectors, chat
+  adapters/       local folder, upload, Nango-backed connector adapter, registry
+  connectors/     Nango client, catalog, polling scheduler, one fetcher per provider (providers/)
+  core/           orchestrator, dedup, versions, job queue, normalizer, events (outbox), auth, Cognee setup + indexer
+  consumers/      Cognee consumer: item.ingested events → chunk, embed, graph
+  chat/           retrieval (Cognee), LangGraph agent, evaluation scoring
+  db/             SQLAlchemy models (sql/schema.sql mirrors them)
+frontend/         Next.js 16 + Tailwind 4 UI
+deploy/nango/     self-hosted Nango compose
+scripts/          cognee_smoke, nango_check, setup_nango_env, run_eval
+evals/            chat evaluation corpus and cases
 ```
 
-## Reused vs. built fresh
+## Good to know
 
-- **Reused (ported to SQLAlchemy, not psycopg2):** the dedup fingerprint pattern (`core/dedup.py`), the chunk split-point priority logic — paragraph break > sentence end > hard cut — generalized from character-based to word-based splitting (`core/chunker.py::WordWindowChunker`), and the cache-before-embed pattern (`core/embedder.py`).
-- **Built fresh — no prior equivalent:** the Adapter/orchestrator contract, the outbox event system, the secrets module, retry/dead-letter handling, and structured metrics.
-
-No files outside this `ingestion_pipeline` folder were modified to build this.
+- Cognee owns chunking, embeddings and the entity graph. Our own `chunk_embeddings` table is no longer written to; it can be dropped.
+- All connector tokens live in Nango; this app stores only connection metadata and per-connection sync cursors.
+- Cognee's storage (vectors, metadata) is under `COGNEE_DATA_ROOT`; keep it on a persistent volume.
+- The login throttle is in memory and per process; run one API instance, or put a rate limiter in front.
+- Real provider fetchers (Gmail, Drive, Slack, Notion, Outlook, ...) are tested against mocked APIs. Expect to tune them on first contact with live accounts.

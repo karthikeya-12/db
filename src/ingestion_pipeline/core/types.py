@@ -24,12 +24,3 @@ class RawItem:
     raw_payload: Any | None = None
     source_metadata: dict = field(default_factory=dict)
     file_name: str | None = None
-
-
-@dataclass
-class Chunk:
-    """One chunk produced by a Chunker, ready for embedding + persistence."""
-    chunk_id: str
-    item_id: str
-    chunk_index: int
-    text: str

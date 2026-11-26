@@ -4,9 +4,30 @@ __pycache__/
 .env
 data/incoming/*
 data/blobstore/*
+data/cognee/
 !data/incoming/.gitkeep
 !data/blobstore/.gitkeep
 spikes/pdf_extraction/samples/*
 !spikes/pdf_extraction/samples/README.md
 spikes/pdf_extraction/comparison_report.md
 *.egg-info/
+data/uploads/*
+!data/uploads/.gitkeep
+deploy/nango/.env
+
+# Secrets and credentials (OAuth client files, keys, any .env variant; samples stay tracked)
+.env.*
+!.env.sample
+!*.example
+client_secret*.json
+*.pem
+*.key
+*.p12
+
+# Tool caches, logs, OS files
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.log
+.DS_Store
+Thumbs.db

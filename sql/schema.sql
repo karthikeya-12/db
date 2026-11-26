@@ -5,7 +5,8 @@
 -- Every statement is safely re-runnable.
 -- ============================================================================
 
-CREATE EXTENSION IF NOT EXISTS vector;
+-- pgvector is no longer needed: chunk embeddings and the vector index live in Cognee (LanceDB).
+-- An existing database keeps its old (now unused) chunk_embeddings table untouched.
 
 CREATE TABLE IF NOT EXISTS ingestion_items (
     item_id         TEXT PRIMARY KEY,
@@ -61,31 +62,6 @@ CREATE TABLE IF NOT EXISTS event_consumer_offsets (
     PRIMARY KEY (consumer_name, topic)
 );
 
--- embedding uses HALFVEC, not VECTOR: pgvector's HNSW/IVFFlat indexes cap out
--- at 2000 dimensions for the plain `vector` type, and text-embedding-3-large
--- produces 3072-dim vectors. `halfvec` (half-precision floats, pgvector >=
--- 0.7.0) supports HNSW indexing up to 4000 dimensions, so it fits. Slight
--- precision tradeoff vs full-precision vector, negligible for cosine-similarity
--- search, and it uses half the storage.
-CREATE TABLE IF NOT EXISTS chunk_embeddings (
-    chunk_id    TEXT PRIMARY KEY,
-    item_id     TEXT NOT NULL REFERENCES ingestion_items(item_id),
-    chunk_index INT NOT NULL,
-    model       TEXT NOT NULL,
-    body_text   TEXT,
-    embedding   HALFVEC(3072),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (item_id, chunk_index)
-);
-
-CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_item ON chunk_embeddings (item_id);
-
--- Vector similarity index -- halfvec_cosine_ops (not vector_cosine_ops) since
--- the column is halfvec. Requires pgvector >= 0.7.0; the pgvector/pgvector:pg16
--- image already used by this project ships a recent enough version.
-CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_vec
-    ON chunk_embeddings
-    USING hnsw (embedding halfvec_cosine_ops);
 
 CREATE TABLE IF NOT EXISTS tabular_rows (
     row_id     BIGSERIAL PRIMARY KEY,
@@ -127,3 +103,97 @@ CREATE TABLE IF NOT EXISTS dead_letter_items (
 );
 
 CREATE INDEX IF NOT EXISTS idx_dead_letter_items_item ON dead_letter_items (item_id);
+
+
+-- ===========================================================================
+-- Phase 0 additions: item versioning + job queue (idempotent)
+-- ===========================================================================
+
+-- Which version of an item is current; bumped each time changed content is ingested.
+ALTER TABLE ingestion_items ADD COLUMN IF NOT EXISTS current_version INT NOT NULL DEFAULT 0;
+
+-- One row per ingested version of an item. (item_id, sha256_hash) unique means
+-- "this item's latest version has exactly this content" == duplicate, regardless of what
+-- other items contain. Replaces the global dedup_registry lookup (that table is
+-- kept for existing databases but is no longer read or written).
+CREATE TABLE IF NOT EXISTS ingestion_item_versions (
+    item_id      TEXT NOT NULL REFERENCES ingestion_items(item_id),
+    version      INT  NOT NULL,
+    sha256_hash  TEXT NOT NULL,
+    storage_ref  TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (item_id, version)
+);
+
+-- Earlier revisions of this file declared UNIQUE (item_id, sha256_hash); an A -> B -> A change needs that gone.
+ALTER TABLE ingestion_item_versions DROP CONSTRAINT IF EXISTS ingestion_item_versions_item_id_sha256_hash_key;
+
+-- Work queue drained by a single worker (core/jobs.py). Claimed with
+-- FOR UPDATE SKIP LOCKED, and never two RUNNING jobs for the same source.
+CREATE TABLE IF NOT EXISTS ingestion_jobs (
+    job_id       TEXT PRIMARY KEY,
+    source_id    TEXT NOT NULL,
+    kind         TEXT NOT NULL CHECK (kind IN ('scan', 'retry_item')),
+    payload      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status       TEXT NOT NULL DEFAULT 'QUEUED' CHECK (status IN ('QUEUED', 'RUNNING', 'DONE', 'FAILED')),
+    attempts     INT NOT NULL DEFAULT 0,
+    error        TEXT,
+    run_after    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    started_at   TIMESTAMPTZ,
+    finished_at  TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_status ON ingestion_jobs (status, run_after);
+-- At most one queued scan per source: a burst of triggers collapses into one job.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ingestion_jobs_one_queued_scan
+    ON ingestion_jobs (source_id) WHERE kind = 'scan' AND status = 'QUEUED';
+
+-- Application users (login). Accounts are created by an operator (CLI or ADMIN_EMAIL/ADMIN_PASSWORD seed);
+-- there is no public sign-up.
+CREATE TABLE IF NOT EXISTS app_users (
+    user_id        TEXT PRIMARY KEY,
+    email          TEXT NOT NULL,
+    password_hash  TEXT NOT NULL,
+    is_active      BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_login_at  TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_app_users_email ON app_users (lower(email));
+
+-- Connections made through Nango (one row per connected account). Mirrors Nango's list; also holds our own
+-- settings (enabled) and polling state (last_synced_at, last_error).
+CREATE TABLE IF NOT EXISTS connector_connections (
+    id                   TEXT PRIMARY KEY,
+    nango_connection_id  TEXT NOT NULL,
+    integration_key      TEXT NOT NULL,
+    provider             TEXT NOT NULL,
+    display_name         TEXT,
+    status               TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'ERROR', 'DISCONNECTED')),
+    enabled              BOOLEAN NOT NULL DEFAULT TRUE,
+    last_synced_at       TIMESTAMPTZ,
+    last_error           TEXT,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (nango_connection_id, integration_key)
+);
+
+-- Chat: conversations belong to a user; messages keep the cited sources of each assistant answer.
+CREATE TABLE IF NOT EXISTS chat_conversations (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES app_users (user_id) ON DELETE CASCADE,
+    title       TEXT NOT NULL DEFAULT 'New conversation',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_chat_conversations_user ON chat_conversations (user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id               BIGSERIAL PRIMARY KEY,
+    conversation_id  TEXT NOT NULL REFERENCES chat_conversations (id) ON DELETE CASCADE,
+    role             TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content          TEXT NOT NULL,
+    sources          JSONB,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_chat_messages_conversation ON chat_messages (conversation_id, id);

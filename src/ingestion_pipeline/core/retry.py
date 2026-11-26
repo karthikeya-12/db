@@ -5,7 +5,6 @@ dead-letter queue for items that exhaust their retry budget.
 from __future__ import annotations
 
 import functools
-from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_random_exponential
@@ -90,13 +89,8 @@ def write_dead_letter(
         item.error_reason = error_message[:500]
 
 
-def requeue_dead_letter(session: Session, dead_letter_id: str) -> None:
-    """Mark a dead-lettered item requeued and reset it to NEW so the orchestrator picks it up again."""
-    row = session.get(DeadLetterItem, dead_letter_id)
-    if row is None:
-        raise KeyError(f"No dead-letter row with id={dead_letter_id!r}")
-    row.requeued_at = datetime.now(timezone.utc)
-    item = session.get(IngestionItem, row.item_id)
-    if item is not None:
-        item.status = "NEW"
-        item.error_reason = None
+def requeue_dead_letter(session: Session, dead_letter_id: str) -> str | None:
+    """Retry a dead-lettered item by queueing a retry_item job (see core/jobs.py). Returns the job_id."""
+    from ingestion_pipeline.core.jobs import requeue_dead_letter as _requeue
+
+    return _requeue(session, dead_letter_id)

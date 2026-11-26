@@ -21,9 +21,12 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import re
 import tempfile
 from abc import ABC, abstractmethod
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 _PAGE_NUMBER_RE = re.compile(r"^\s*(page\s+)?\d+(\s*/\s*\d+)?\s*$", re.IGNORECASE)
@@ -86,15 +89,26 @@ class DoclingDocumentNormalizer(DocumentNormalizer):
     to Docling, then unlinking afterward, works on every OS.
     """
 
+    def __init__(self) -> None:
+        self._converter = None  # building a converter is slow; created on first use and reused
+
     def to_markdown(self, raw_bytes: bytes, file_name: str) -> str:
-        from docling.document_converter import DocumentConverter
+        from ingestion_pipeline.core.formats import decode_text, is_text_file
+
+        if is_text_file(file_name):  # text-like files need no conversion
+            return clean_markdown(decode_text(raw_bytes))
+
+        if self._converter is None:
+            from docling.document_converter import DocumentConverter
+
+            self._converter = DocumentConverter()
 
         suffix = Path(file_name).suffix or ".pdf"
         tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
         try:
             tmp.write(raw_bytes)
             tmp.close()  # release the OS lock before Docling opens the same path
-            result = DocumentConverter().convert(tmp.name)
+            result = self._converter.convert(tmp.name)
             markdown_text = result.document.export_to_markdown()
         finally:
             Path(tmp.name).unlink(missing_ok=True)
@@ -123,15 +137,54 @@ class TabularParser:
         raise ValueError(f"Unsupported tabular format: {file_name!r}")
 
     def _parse_csv(self, raw_bytes: bytes) -> list[dict]:
-        text = raw_bytes.decode("utf-8-sig")
+        try:
+            text = raw_bytes.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw_bytes.decode("cp1252", errors="replace")  # typical for CSVs exported from Excel on Windows
         reader = csv.DictReader(io.StringIO(text))
-        return [dict(row) for row in reader]
+        rows = []
+        for row in reader:
+            # A row longer than the header lands its extra cells under the key None -- name them.
+            extras = row.pop(None, None)
+            clean = {str(key): _json_safe(value) for key, value in row.items()}
+            for offset, value in enumerate(extras or []):
+                clean[f"col_{len(clean) + offset}"] = _json_safe(value)
+            rows.append(clean)
+        return rows
 
     def _parse_xlsx(self, raw_bytes: bytes) -> list[dict]:
         from openpyxl import load_workbook
 
         workbook = load_workbook(io.BytesIO(raw_bytes), read_only=True, data_only=True)
-        sheet = workbook.active
-        rows_iter = sheet.iter_rows(values_only=True)
-        header = [str(h) if h is not None else f"col_{i}" for i, h in enumerate(next(rows_iter))]
-        return [dict(zip(header, row)) for row in rows_iter]
+        try:
+            sheet = workbook.active
+            rows_iter = sheet.iter_rows(values_only=True)
+            first = next(rows_iter, None)
+            if first is None:  # completely empty sheet
+                return []
+            header = [str(h) if h is not None else f"col_{i}" for i, h in enumerate(first)]
+            return [
+                {key: _json_safe(value) for key, value in zip(header, row)}
+                for row in rows_iter
+                if any(cell is not None for cell in row)  # skip blank spacer rows
+            ]
+        finally:
+            workbook.close()
+
+
+def _json_safe(value):
+    """Make a spreadsheet cell storable in a JSONB column: dates become ISO strings, decimals
+    become floats, bytes become text, and NaN/inf (which JSONB rejects) become null."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    if isinstance(value, timedelta):
+        return value.total_seconds()
+    if isinstance(value, Decimal):
+        return float(value) if value.is_finite() else None
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", errors="replace")
+    return str(value)

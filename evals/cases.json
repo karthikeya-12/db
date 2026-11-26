@@ -1,0 +1,17 @@
+[
+  {"id": "vacation-days", "question": "How many vacation days do employees get each year?", "must_include": ["25"], "cite": "eval_northwind_handbook.md"},
+  {"id": "carry-over", "question": "How many unused vacation days can be carried over?", "must_include": ["5"], "cite": "eval_northwind_handbook.md"},
+  {"id": "expense-approval", "question": "When do I need written approval for an expense?", "must_include": ["500"], "cite": "eval_northwind_handbook.md"},
+  {"id": "q3-revenue", "question": "What was the revenue in the third quarter?", "must_include": ["12.4"], "cite": "eval_q3_review.md"},
+  {"id": "churn-driver", "question": "Who led the tracking dashboard that reduced churn?", "must_include": ["Priya Raman"], "cite": "eval_q3_review.md"},
+  {"id": "q4-risk", "question": "What is the main risk for Q4?", "must_include": ["driver"], "cite": "eval_q3_review.md"},
+  {"id": "contract-term", "question": "How long does the Helios contract run and how is it renewed?", "must_include": ["36", "90"], "cite": "eval_vendor_contract.md"},
+  {"id": "vendor-contact", "question": "Who is our contact at Helios Cold Storage?", "must_include": ["Tomas Berg"], "cite": "eval_vendor_contract.md"},
+  {"id": "cross-doc", "question": "Which company stores our refrigerated goods and what do we pay them monthly?", "must_include": ["Helios", "18,500"], "cite": "eval_vendor_contract.md"},
+  {"id": "follow-up", "history": [
+      {"role": "user", "content": "Tell me about the Helios Cold Storage contract."},
+      {"role": "assistant", "content": "Helios Cold Storage provides refrigerated storage under a 36 month contract [1]."}],
+   "question": "What interest applies if we pay late?", "must_include": ["1.5"], "cite": "eval_vendor_contract.md"},
+  {"id": "not-in-archive-ceo", "question": "Who is the CEO of Northwind Logistics?", "answerable": false},
+  {"id": "not-in-archive-parental", "question": "How many weeks of parental leave are offered?", "answerable": false}
+]

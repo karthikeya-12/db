@@ -1,0 +1,13 @@
+.venv
+.git
+**/__pycache__
+.env
+data
+frontend
+deploy
+tests
+spikes
+evals
+docs
+*.md
+!README.md

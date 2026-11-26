@@ -9,14 +9,15 @@ import enum
 import uuid
 from datetime import datetime
 
-from pgvector.sqlalchemy import HALFVEC
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -70,6 +71,39 @@ class IngestionItem(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    current_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+
+class IngestionItemVersion(Base):
+    """One ingested version of an item. An item whose LATEST version has exactly the incoming
+    content is a duplicate; the same hash may legitimately appear again later (A -> B -> A)."""
+
+    __tablename__ = "ingestion_item_versions"
+
+    item_id: Mapped[str] = mapped_column(String, ForeignKey("ingestion_items.item_id"), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sha256_hash: Mapped[str] = mapped_column(String, nullable=False)
+    storage_ref: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class IngestionJob(Base):
+    """Queue row drained by core/jobs.py. The partial unique index that limits a source
+    to one queued scan lives in sql/schema.sql only."""
+
+    __tablename__ = "ingestion_jobs"
+
+    job_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: uuid.uuid4().hex)
+    source_id: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="QUEUED")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(String)
+    run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class DedupRegistry(Base):
@@ -115,22 +149,6 @@ class EventConsumerOffset(Base):
     )
 
 
-class ChunkEmbedding(Base):
-    __tablename__ = "chunk_embeddings"
-    __table_args__ = (UniqueConstraint("item_id", "chunk_index", name="uq_chunk_embeddings_item_chunk"),)
-
-    chunk_id: Mapped[str] = mapped_column(String, primary_key=True)
-    item_id: Mapped[str] = mapped_column(String, ForeignKey("ingestion_items.item_id"), nullable=False, index=True)
-    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    model: Mapped[str] = mapped_column(String, nullable=False)
-    body_text: Mapped[str | None] = mapped_column(String)
-    # HALFVEC, not Vector: pgvector's HNSW index caps out at 2000 dims for
-    # the plain vector type, and text-embedding-3-large is 3072-dim. halfvec
-    # supports HNSW up to 4000 dims (see sql/schema.sql for the matching index).
-    embedding: Mapped[list[float] | None] = mapped_column(HALFVEC(3072))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
 class TabularRow(Base):
     __tablename__ = "tabular_rows"
     __table_args__ = (UniqueConstraint("item_id", "row_index", name="uq_tabular_rows_item_row"),)
@@ -170,3 +188,54 @@ class DeadLetterItem(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     requeued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AppUser(Base):
+    __tablename__ = "app_users"
+
+    user_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: uuid.uuid4().hex)
+    email: Mapped[str] = mapped_column(String, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ConnectorConnection(Base):
+    __tablename__ = "connector_connections"
+    __table_args__ = (UniqueConstraint("nango_connection_id", "integration_key"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: uuid.uuid4().hex)
+    nango_connection_id: Mapped[str] = mapped_column(String, nullable=False)
+    integration_key: Mapped[str] = mapped_column(String, nullable=False)
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="ACTIVE")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ChatConversation(Base):
+    __tablename__ = "chat_conversations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: uuid.uuid4().hex)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("app_users.user_id", ondelete="CASCADE"), nullable=False)
+    title: Mapped[str] = mapped_column(String, nullable=False, default="New conversation")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String, ForeignKey("chat_conversations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    role: Mapped[str] = mapped_column(String, nullable=False)  # user | assistant
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    sources: Mapped[list | None] = mapped_column(JSONB)  # citation cards shown under an assistant answer
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

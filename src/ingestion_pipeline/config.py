@@ -40,29 +40,65 @@ class Settings(BaseSettings):
     retry_max_attempts: int = 5
     retry_base_seconds: float = 2.0
 
-    # Chunking (word-window strategy -- DOCUMENT content)
-    chunk_min_words: int = 400
-    chunk_max_words: int = 500
-    chunk_overlap_words: int = 50
-
     # Neo4j -- used only by the entity/relationship consumer (consumers/entity_relationship_consumer.py),
     # never by the core ingestion pipeline itself. Fill in your own instance's details.
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = ""
+    neo4j_database: str = ""  # Neo4j database all graph data is written to ("" -> the server default)
 
     # Entity/relationship extraction (separate from the embedding model above --
     # this is a chat-completion call, not an embedding call)
     entity_extraction_model: str = "gpt-4o-mini"
 
+    # Cognee -- owns chunking, embeddings, entity/relationship extraction and graph + vector
+    # indexing (see core/cognee_setup.py). Every value falls back to an existing setting above,
+    # so a .env written before Cognee was added keeps working.
+    cognee_llm_model: str = ""  # empty -> "openai/<entity_extraction_model>"
+    cognee_llm_api_key: str = ""  # empty -> embedding_api_key (same OpenAI key)
+    embedding_dimensions: int = 3072  # text-embedding-3-large
+    cognee_data_root: str = "./data/cognee"  # Cognee's own metadata DB, vector store and ingested copies
+
+    # Chat (chat/agent.py): the model that writes answers, and how much it reads per question.
+    chat_model: str = "gpt-4o-mini"
+    chat_top_k: int = 8  # passages retrieved per question
+    chat_history_turns: int = 6  # earlier messages given to the model for follow-up questions
+    chat_use_graph: bool = True  # also pull related facts from the knowledge graph
+
     # Local-folder watcher (watcher.py) -- the folder cli.py and watcher.py both
     # point LocalFolderAdapter at; kept here so both entrypoints agree without
     # hardcoding the path twice.
     watch_folder_path: str = "./data/incoming"
+    upload_folder_path: str = "./data/uploads"
+    upload_max_mb: int = 50
 
     # REST API (api/main.py) -- comma-separated list of origins allowed to call
     # it; the ingestion_pipeline_ui frontend runs on the Vite dev server by default.
-    api_cors_origins: str = "http://localhost:5173"
+    api_cors_origins: str = "http://localhost:3000"
+
+    # Authentication (api/auth.py). AUTH_SECRET signs session cookies: set a long random value
+    # (python -c "import secrets; print(secrets.token_urlsafe(48))"). If empty, a random one is generated at
+    # startup and everyone is signed out on each restart.
+    auth_secret: str = ""
+    auth_session_hours: int = 72
+    auth_cookie_secure: bool = False  # set true when served over HTTPS
+    # Self-service sign-up on the login page. Anyone who can sign up can read everything in the archive, so for anything
+    # beyond local use set SIGNUP_INVITE_CODE (people must enter it) or ALLOW_SIGNUP=false.
+    allow_signup: bool = True
+    signup_invite_code: str = ""
+    # Optional first-user seed: created at startup when no users exist yet.
+    admin_email: str = ""
+    admin_password: str = ""
+
+    # Self-hosted Nango (deploy/nango, docs/NANGO_SETUP.md). The secret key comes from the Nango
+    # dashboard (Environment Settings); the API uses it to list connections and fetch synced records.
+    nango_base_url: str = "http://localhost:3003"
+    nango_secret_key: str = ""
+    # How connectors look for new data (free Nango has no sync engine, so we poll each connected account).
+    connector_poll_minutes: int = 10
+    connector_initial_days: int = 30  # first sync of a new connection only reaches back this far
+    gmail_max_mails: int = 100  # most Gmail messages to ingest per connected account (newest first); 0 = no limit
+    connector_max_items_per_scan: int = 100  # bigger backlogs are worked through over several scans
 
     # Logging
     log_level: str = "INFO"

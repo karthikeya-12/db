@@ -17,6 +17,8 @@ class JsonFormatter(logging.Formatter):
         for key in ("item_id", "source_id", "stage", "outcome"):
             if hasattr(record, key):
                 payload[key] = getattr(record, key)
+        if record.exc_info:  # without this every logger.exception() lost its traceback
+            payload["exception"] = self.formatException(record.exc_info)
         return json.dumps(payload)
 
 

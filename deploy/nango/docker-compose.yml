@@ -1,0 +1,67 @@
+# Self-hosted Nango (OAuth + API sync for connectors).
+# Run from the project root:
+#   docker compose -f deploy/nango/docker-compose.yml --env-file deploy/nango/.env up -d
+# Create deploy/nango/.env first:  uv run python scripts/setup_nango_env.py
+# Full walkthrough: docs/NANGO_SETUP.md
+name: nango
+
+services:
+  nango-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nango
+      POSTGRES_PASSWORD: ${NANGO_DB_PASSWORD}
+      POSTGRES_DB: nango
+    volumes:
+      - nango_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nango -d nango"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # No published port: only Nango needs this database.
+
+  nango-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - nango_redis:/data
+
+  nango-server:
+    image: nangohq/nango-server:hosted
+    platform: linux/amd64
+    restart: unless-stopped
+    depends_on:
+      nango-db:
+        condition: service_healthy
+      nango-redis:
+        condition: service_started
+    ports:
+      # The server listens on 8080 inside the container; we publish it on 3003 on your machine.
+      - "${NANGO_SERVER_PORT:-3003}:8080"
+      - "${NANGO_CONNECT_UI_PORT:-3009}:3009"
+    extra_hosts:
+      # Lets Nango call our API's webhook endpoint running on the host machine.
+      - "host.docker.internal:host-gateway"
+    environment:
+      NANGO_ENCRYPTION_KEY: ${NANGO_ENCRYPTION_KEY}
+      NANGO_DB_HOST: nango-db
+      NANGO_DB_USER: nango
+      NANGO_DB_PASSWORD: ${NANGO_DB_PASSWORD}
+      NANGO_DB_NAME: nango
+      NANGO_DB_SSL: "false"
+      RECORDS_DATABASE_URL: postgresql://nango:${NANGO_DB_PASSWORD}@nango-db:5432/nango
+      NANGO_REDIS_URL: redis://nango-redis:6379
+      NANGO_SERVER_URL: ${NANGO_SERVER_URL:-http://localhost:3003}
+      NANGO_PUBLIC_SERVER_URL: ${NANGO_SERVER_URL:-http://localhost:3003}
+      NANGO_PUBLIC_CONNECT_URL: ${NANGO_CONNECT_URL:-http://localhost:3009}
+      FLAG_SERVE_CONNECT_UI: "true"
+      FLAG_AUTH_ENABLED: "true"
+      NANGO_LOGS_ENABLED: "false"
+      CSP_REPORT_ONLY: "true"
+      LOG_LEVEL: info
+
+volumes:
+  nango_db:
+  nango_redis:

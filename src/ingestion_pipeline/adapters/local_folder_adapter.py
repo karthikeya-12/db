@@ -13,41 +13,33 @@ import time
 from pathlib import Path
 
 from ingestion_pipeline.core.adapter import Adapter
-from ingestion_pipeline.core.types import ContentType, RawItem
-
-_EXT_TO_CONTENT_TYPE = {
-    ".csv": ContentType.TABULAR,
-    ".xlsx": ContentType.TABULAR,
-    ".txt": ContentType.DOCUMENT,
-    ".md": ContentType.DOCUMENT,
-    ".pdf": ContentType.DOCUMENT,
-    ".docx": ContentType.DOCUMENT,
-}
-
+from ingestion_pipeline.core.formats import classify
+from ingestion_pipeline.core.types import RawItem
 
 class LocalFolderAdapter(Adapter):
     source_id = "local_folder"
+    item_prefix = "local"
 
     def __init__(self, folder: str | Path) -> None:
         self._folder = Path(folder)
         self._folder.mkdir(parents=True, exist_ok=True)
 
     def list_changes(self, cursor: str | None) -> list[Path]:
-        since = float(cursor) if cursor else 0.0
+        # The cursor is deliberately ignored. An mtime watermark silently skips files whose
+        # modified time is older than the last run -- on Windows a copied file keeps its original
+        # mtime -- so every supported file is listed and the orchestrator's per-item content-hash
+        # check skips the unchanged ones cheaply.
         return sorted(
-            p
-            for p in self._folder.iterdir()
-            if p.is_file() and p.stat().st_mtime > since and p.suffix.lower() in _EXT_TO_CONTENT_TYPE
+            p for p in self._folder.iterdir() if p.is_file() and classify(p.name) is not None
         )
 
     def fetch(self, ref: Path) -> RawItem:
-        suffix = ref.suffix.lower()
-        content_type = _EXT_TO_CONTENT_TYPE.get(suffix)
+        content_type = classify(ref.name)
         if content_type is None:
-            raise ValueError(f"Unsupported extension for local demo adapter: {suffix!r}")
+            raise ValueError(f"Unsupported file format: {ref.suffix!r}")
         return RawItem(
             source_id=self.source_id,
-            item_id=f"local:{ref.name}",
+            item_id=f"{self.item_prefix}:{ref.name}",
             content_type=content_type,
             raw_bytes=ref.read_bytes(),
             source_metadata={"path": str(ref), "mtime": ref.stat().st_mtime},
@@ -55,4 +47,4 @@ class LocalFolderAdapter(Adapter):
         )
 
     def advance_cursor(self, ref: Path) -> str:
-        return str(max(ref.stat().st_mtime, time.time() - 1))
+        return str(time.time())  # informational only -- list_changes ignores the cursor

@@ -12,10 +12,18 @@
 #
 # If you do use this fallback, point DATABASE_URL at whichever port you map
 # below instead of the shared container's 5433.
+#
+# FULL STACK (profile "stack"): Postgres, Neo4j Enterprise (APOC + the "ingest" database), the API and the web UI:
+#
+#   docker compose --profile stack up -d --build      # UI on http://localhost:3000
+#
+# Secrets (OPENAI key, AUTH_SECRET, ADMIN_EMAIL/ADMIN_PASSWORD, NANGO_SECRET_KEY, NEO4J_PASSWORD) come from .env.
+# Neo4j Enterprise is free for development; set NEO4J_ACCEPT_LICENSE=yes only if you accept its licence terms.
+# Self-hosted Nango runs separately (docs/NANGO_SETUP.md); the API reaches it at host.docker.internal:3003.
 
 services:
   postgres:
-    profiles: ["standalone"]
+    profiles: ["standalone", "stack"]
     image: pgvector/pgvector:pg16
     container_name: ingestion-pipeline-postgres-standalone
     restart: unless-stopped
@@ -28,6 +36,85 @@ services:
     volumes:
       - ingestion_pg_data:/var/lib/postgresql/data
       - ./sql/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ingestion -d ingestion_pipeline"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  neo4j:
+    profiles: ["stack"]
+    image: neo4j:2026-enterprise
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
+      NEO4J_ACCEPT_LICENSE_AGREEMENT: ${NEO4J_ACCEPT_LICENSE:-no}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'cypher-shell -u neo4j -p "$${NEO4J_AUTH#neo4j/}" "RETURN 1" || exit 1']
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
+  neo4j-init:
+    profiles: ["stack"]
+    image: neo4j:2026-enterprise
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    environment:
+      NEO4J_ACCEPT_LICENSE_AGREEMENT: ${NEO4J_ACCEPT_LICENSE:-no}
+    entrypoint: ["cypher-shell", "-a", "bolt://neo4j:7687", "-u", "neo4j", "-p", "${NEO4J_PASSWORD}", "-d", "system"]
+    command: ["CREATE DATABASE ${NEO4J_DATABASE:-ingest} IF NOT EXISTS WAIT"]
+    restart: "no"
+
+  api:
+    profiles: ["stack"]
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://ingestion:ingestion@postgres:5432/ingestion_pipeline
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_DATABASE: ${NEO4J_DATABASE:-ingest}
+      NANGO_BASE_URL: http://host.docker.internal:3003
+      API_CORS_ORIGINS: http://localhost:3000
+      AUTH_COOKIE_SECURE: "false"
+      BLOB_STORE_LOCAL_ROOT: /data/blobstore
+      UPLOAD_FOLDER_PATH: /data/uploads
+      COGNEE_DATA_ROOT: /data/cognee
+      WATCH_FOLDER_PATH: /data/incoming
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j-init:
+        condition: service_completed_successfully
+    volumes:
+      - archive_data:/data
+
+  web:
+    profiles: ["stack"]
+    build:
+      context: ./frontend
+      args:
+        API_URL: http://api:8000
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
 
 volumes:
   ingestion_pg_data:
+  neo4j_data:
+  archive_data:
