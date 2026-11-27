@@ -5,6 +5,9 @@ import type { NextConfig } from "next";
 const API_URL = process.env.API_URL ?? "http://localhost:8000";
 
 const nextConfig: NextConfig = {
+  // The dev server refuses scripts requested from any other host, so without this a page opened through an
+  // ngrok link never becomes interactive (forms then submit as plain page loads).
+  allowedDevOrigins: ["*.ngrok-free.dev", "*.ngrok-free.app", "*.ngrok.app", "*.ngrok.io"],
   // Next's proxy gives up after 30 s by default; a chat answer (graph search + model) can take longer.
   experimental: { proxyTimeout: 180_000 },
   async rewrites() {
